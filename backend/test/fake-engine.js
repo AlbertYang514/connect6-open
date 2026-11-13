@@ -4,9 +4,23 @@
 'use strict';
 
 const delay = Number.parseInt(process.env.FAKE_ENGINE_DELAY_MS || '0', 10) || 0;
+const mode = process.env.FAKE_ENGINE_MODE || 'normal';
 let buffer = '';
 
 function respond(line) {
+  if (mode === 'crash') {
+    process.exit(1);
+  }
+  if (mode === 'flood') {
+    // Never terminate the line; the gateway must bound its stdout buffer.
+    process.stdout.write('x'.repeat(65536));
+    return;
+  }
+  if (mode === 'null-response') {
+    process.stdout.write('null\n');
+    return;
+  }
+
   let request;
   try {
     request = JSON.parse(line);

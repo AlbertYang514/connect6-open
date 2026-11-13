@@ -33,13 +33,59 @@ const GAME_SESSION_TTL_MS = Math.max(1000, envInt('CONNECT6_SESSION_TTL_MS', 30 
 const SESSION_CLEANUP_INTERVAL_MS = Math.max(1000, envInt('CONNECT6_CLEANUP_INTERVAL_MS', 30 * 60 * 1000));
 const ENGINE_TIMEOUT_MS = Math.max(1000, envInt('CONNECT6_ENGINE_TIMEOUT_MS', 30 * 1000));
 
+// Client-supplied search budgets are clamped by the gateway; the engine must
+// never be allowed to run for an arbitrarily long time on one request.
+const MAX_CLIENT_TIME_MS = Math.max(0, envInt('CONNECT6_MAX_CLIENT_TIME_MS', 10 * 1000));
+const MAX_REQUEST_BYTES = Math.max(1024, envInt('CONNECT6_MAX_REQUEST_BYTES', 20 * 1000));
+const MAX_ENGINE_LINE_BYTES = Math.max(1024, envInt('CONNECT6_MAX_ENGINE_LINE_BYTES', 1024 * 1024));
+
+// Lightweight in-memory limits: enough to stop a single client from burning
+// every anonymous slot, without introducing accounts or external storage.
+const REQUEST_RATE_WINDOW_MS = Math.max(1000, envInt('CONNECT6_RATE_WINDOW_MS', 60 * 1000));
+const REQUEST_RATE_MAX = Math.max(1, envInt('CONNECT6_RATE_LIMIT_PER_WINDOW', 120));
+const SESSION_RATE_WINDOW_MS = Math.max(1000, envInt('CONNECT6_SESSION_RATE_WINDOW_MS', 10 * 60 * 1000));
+const SESSION_RATE_MAX = Math.max(1, envInt('CONNECT6_SESSION_LIMIT_PER_WINDOW', 10));
+
 // ---- anonymous active-game slots ----
 const sessions = new Map(); // token -> {expires, inFlight}
+
+// ---- per-client rate limits (fixed window) ----
+const rateBuckets = new Map(); // key -> {count, resetAt}
+
+function clientIp(req) {
+  const remote = (req.socket && req.socket.remoteAddress) || '';
+  const loopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+  const forwarded = req.headers['x-forwarded-for'];
+  if (loopback && typeof forwarded === 'string') {
+    const hops = forwarded.split(',').map((part) => part.trim()).filter(Boolean);
+    // The last hop is the one appended by our own reverse proxy, so it is the
+    // only entry a client cannot forge.
+    if (hops.length > 0) return hops[hops.length - 1];
+  }
+  return remote || 'unknown';
+}
+
+function takeToken(key, limit, windowMs) {
+  const now = Date.now();
+  let bucket = rateBuckets.get(key);
+  if (!bucket || now >= bucket.resetAt) {
+    bucket = { count: 0, resetAt: now + windowMs };
+    rateBuckets.set(key, bucket);
+  }
+  if (bucket.count >= limit) {
+    return { ok: false, retryAfter: Math.max(1, Math.ceil((bucket.resetAt - now) / 1000)) };
+  }
+  bucket.count += 1;
+  return { ok: true };
+}
 
 function cleanupSessions() {
   const now = Date.now();
   for (const [token, session] of sessions) {
     if (now >= session.expires && !session.inFlight) sessions.delete(token);
+  }
+  for (const [key, bucket] of rateBuckets) {
+    if (now >= bucket.resetAt) rateBuckets.delete(key);
   }
 }
 
@@ -79,12 +125,25 @@ function reserveSession(req, res) {
 
   // An expired request that is still being processed keeps its slot until it finishes.
   const expiredSession = sessions.get(token);
-  if (expiredSession && expiredSession.inFlight) return null;
+  if (expiredSession && expiredSession.inFlight) return { error: 'busy' };
+
+  // Only new anonymous slots are rationed. A client that keeps its cookie is
+  // never punished by this limit.
+  const rate = takeToken('session:' + clientIp(req), SESSION_RATE_MAX, SESSION_RATE_WINDOW_MS);
+  if (!rate.ok) return { error: 'rate', retryAfter: rate.retryAfter };
 
   const newToken = createSession();
-  if (!newToken) return null;
+  if (!newToken) return { error: 'capacity' };
   setSessionCookie(res, req, newToken);
   return { token: newToken, session: sessions.get(newToken), created: true };
+}
+
+function respondSessionError(res, reservation) {
+  if (reservation.error === 'rate') {
+    res.setHeader('Retry-After', String(reservation.retryAfter));
+    return respond(res, 429, { error: 'too many new sessions' });
+  }
+  return respond(res, 503, { error: 'game capacity reached' });
 }
 
 function setSessionCookie(res, req, token) {
@@ -152,19 +211,38 @@ let currentReq = null;
 function ensureEngine() {
   if (engineProc && !engineProc.killed) return engineProc;
 
-  const proc = spawn(ENGINE_PATH, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let proc;
+  try {
+    proc = spawn(ENGINE_PATH, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+  } catch (err) {
+    console.error('[engine spawn error]', err.message);
+    return null;
+  }
   engineProc = proc;
   proc.stdout.setEncoding('utf8');
 
   let buf = '';
+  let overflowed = false;
+  const dropEngine = (message) => {
+    if (overflowed) return;
+    overflowed = true;
+    buf = '';
+    console.error('[engine] ' + message);
+    try { proc.kill('SIGKILL'); } catch (e) { /* already gone */ }
+    if (engineProc === proc) engineProc = null;
+    failCurrent(502, { error: 'engine output too large' });
+  };
   proc.stdout.on('data', (d) => {
+    if (overflowed) return;
     buf += d;
     let nl;
     while ((nl = buf.indexOf('\n')) >= 0) {
+      if (nl > MAX_ENGINE_LINE_BYTES) return dropEngine('response line exceeds limit');
       const line = buf.slice(0, nl);
       buf = buf.slice(nl + 1);
       onEngineLine(line);
     }
+    if (buf.length > MAX_ENGINE_LINE_BYTES) dropEngine('unterminated output exceeds limit');
   });
   proc.stderr.on('data', (d) => console.error('[engine]', String(d)));
   proc.stdin.on('error', (err) => console.error('[engine stdin]', err.message));
@@ -172,14 +250,15 @@ function ensureEngine() {
   proc.on('error', (err) => {
     console.error('[engine spawn error]', err.message);
     if (engineProc === proc) engineProc = null;
-    failCurrent(503, { error: 'engine unavailable' });
+    // Only fail the request that was actually running on this engine.
+    if (currentReq && currentReq.proc === proc) failCurrent(503, { error: 'engine unavailable' });
   });
 
   proc.on('exit', (code, signal) => {
     console.error('[engine] exited', code, signal || '');
     if (engineProc === proc) engineProc = null;
     // A crashed engine must not leave a request or its slot stuck forever.
-    failCurrent(503, { error: 'engine unavailable' });
+    if (currentReq && currentReq.proc === proc) failCurrent(503, { error: 'engine unavailable' });
   });
 
   return proc;
@@ -199,7 +278,7 @@ function failCurrent(code, obj) {
   engineBusy = false;
   clearEngineTimer();
   releaseSession(req.token);
-  respond(req.res, code, obj);
+  if (!req.aborted) respond(req.res, code, obj);
   pump();
 }
 
@@ -213,10 +292,15 @@ function onEngineLine(line) {
 
   try {
     const j = JSON.parse(line);
-    if (j.error) respond(req.res, 400, { error: j.error });
-    else respond(req.res, 200, j);
+    if (j === null || typeof j !== 'object' || Array.isArray(j)) {
+      if (!req.aborted) respond(req.res, 500, { error: 'engine parse error' });
+    } else if (j.error) {
+      if (!req.aborted) respond(req.res, 400, { error: String(j.error) });
+    } else {
+      if (!req.aborted) respond(req.res, 200, j);
+    }
   } catch (e) {
-    respond(req.res, 500, { error: 'engine parse error' });
+    if (!req.aborted) respond(req.res, 500, { error: 'engine parse error' });
   }
   pump();
 }
@@ -242,6 +326,7 @@ function pump() {
       failCurrent(503, { error: 'engine unavailable' });
       return;
     }
+    task.proc = proc;
     try {
       proc.stdin.write(task.line + '\n');
     } catch (e) {
@@ -252,14 +337,19 @@ function pump() {
 }
 
 function respond(res, code, obj) {
-  if (res.headersSent) return;
-  res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-  res.end(JSON.stringify(obj));
+  if (res.headersSent || res.writableEnded || res.destroyed) return;
+  try {
+    res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify(obj));
+  } catch (e) {
+    // The client may have gone away mid-response; never let that crash the gateway.
+    try { res.destroy(); } catch (ignored) { /* nothing left to do */ }
+  }
 }
 
 function submit(req, res, line) {
   const reservation = reserveSession(req, res);
-  if (!reservation) return respond(res, 503, { error: 'game capacity reached' });
+  if (reservation.error) return respondSessionError(res, reservation);
 
   const { token, session, created } = reservation;
   if (session.inFlight || pending.length + (engineBusy ? 1 : 0) >= MAX_ACTIVE_GAMES) {
@@ -268,9 +358,22 @@ function submit(req, res, line) {
     return respond(res, 503, { error: 'game capacity reached' });
   }
 
+  const task = { req, res, line, token, aborted: false };
   session.inFlight = true;
-  pending.push({ req, res, line, token });
+  pending.push(task);
+  req.once('aborted', () => cancelTask(task));
   pump();
+}
+
+function cancelTask(task) {
+  const index = pending.indexOf(task);
+  if (index >= 0) {
+    pending.splice(index, 1);
+    releaseSession(task.token);
+    return;
+  }
+  // Already running: let the engine finish, but nobody is waiting any more.
+  if (currentReq === task) task.aborted = true;
 }
 
 // ---- cookie parsing ----
@@ -289,16 +392,46 @@ function getCookie(req, name) {
 
 // ---- request body reader ----
 function readBody(req, cb) {
-  let data = '';
-  req.on('data', (c) => {
-    data += c;
-    if (data.length > 20000) {
-      req.destroy();
-      return cb({ error: 'body too large' });
+  const chunks = [];
+  let size = 0;
+  let done = false;
+  const finish = (err, body) => {
+    if (done) return;
+    done = true;
+    cb(err, body);
+  };
+  req.on('data', (chunk) => {
+    if (done) return;
+    size += chunk.length;
+    if (size > MAX_REQUEST_BYTES) {
+      // Stop buffering; discard the rest so the 413 can still be delivered.
+      finish({ status: 413, error: 'body too large' });
+      req.resume();
+      return;
     }
+    chunks.push(chunk);
   });
-  req.on('end', () => cb(null, data));
-  req.on('error', () => cb({ error: 'read error' }));
+  req.on('end', () => finish(null, Buffer.concat(chunks).toString('utf8')));
+  req.on('error', () => finish({ status: 400, error: 'read error' }));
+  req.on('aborted', () => finish({ status: 400, error: 'aborted' }));
+}
+
+function parseJsonObject(body) {
+  let value;
+  try {
+    value = JSON.parse(body);
+  } catch (e) {
+    return { ok: false };
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return { ok: false };
+  return { ok: true, value };
+}
+
+function validateTimeMs(value) {
+  if (value === undefined) return { ok: true, timeMs: 0 };
+  if (typeof value !== 'number' || !Number.isInteger(value)) return { ok: false };
+  if (value < 0 || value > MAX_CLIENT_TIME_MS) return { ok: false };
+  return { ok: true, timeMs: value };
 }
 
 function apiPath(rawPath) {
@@ -311,28 +444,47 @@ function apiPath(rawPath) {
 }
 
 // ---- server ----
-const server = http.createServer((req, res) => {
-  const rawPath = new URL(req.url, 'http://x').pathname;
-  const p = apiPath(rawPath);
-
+function handleRequest(req, res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
 
+  let rawPath;
+  try {
+    rawPath = new URL(req.url, 'http://x').pathname;
+  } catch (e) {
+    return respond(res, 400, { error: 'bad request' });
+  }
+  const p = apiPath(rawPath);
+
+  const rate = takeToken('request:' + clientIp(req), REQUEST_RATE_MAX, REQUEST_RATE_WINDOW_MS);
+  if (!rate.ok) {
+    res.setHeader('Retry-After', String(rate.retryAfter));
+    return respond(res, 429, { error: 'too many requests' });
+  }
+
   if (p === '/api/session' && req.method === 'GET') {
-    if (!reserveSession(req, res)) return respond(res, 503, { ok: false, error: 'game capacity reached' });
+    const reservation = reserveSession(req, res);
+    if (reservation.error) return respondSessionError(res, reservation);
     respond(res, 200, { ok: true });
     return;
   }
 
   if (p === '/api/move' && req.method === 'POST') {
     readBody(req, (err, body) => {
-      if (err) return respond(res, 400, { error: 'bad request' });
-      let j;
-      try { j = JSON.parse(body); } catch (e) { return respond(res, 400, { error: 'bad json' }); }
+      if (err) {
+        if (err.status === 413) res.setHeader('Connection', 'close');
+        return respond(res, err.status || 400, { error: err.error || 'bad request' });
+      }
+
+      const parsed = parseJsonObject(body);
+      if (!parsed.ok) return respond(res, 400, { error: 'bad json' });
+      const j = parsed.value;
 
       const board = j.board;
       const side = j.side;
       const difficulty = ['easy', 'normal', 'hard', 'expert'].includes(j.difficulty) ? j.difficulty : 'normal';
       const stonesThisTurn = (j.stonesThisTurn === 1 || j.stonesThisTurn === 2) ? j.stonesThisTurn : 0;
+      const time = validateTimeMs(j.timeMs);
+      if (!time.ok) return respond(res, 400, { error: 'invalid timeMs' });
 
       const v = validateBoard(board);
       if (!v.ok) return respond(res, 400, { error: 'invalid board: ' + v.reason });
@@ -341,16 +493,47 @@ const server = http.createServer((req, res) => {
       const barr = parseBoard(board);
       if (hasSix(barr, 1) || hasSix(barr, 2)) return respond(res, 400, { error: 'game already over' });
 
-      const line = JSON.stringify({ board, side, difficulty, stonesThisTurn, timeMs: j.timeMs || 0 });
+      const line = JSON.stringify({ board, side, difficulty, stonesThisTurn, timeMs: time.timeMs });
       submit(req, res, line);
     });
     return;
   }
 
   respond(res, 404, { error: 'not found' });
+}
+
+const server = http.createServer((req, res) => {
+  try {
+    handleRequest(req, res);
+  } catch (err) {
+    console.error('[gateway] request handler error', err);
+    respond(res, 500, { error: 'internal error' });
+  }
+});
+
+// Malformed HTTP (bad request line, headers) must close the socket, not crash.
+server.on('clientError', (err, socket) => {
+  try {
+    if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+    else socket.destroy();
+  } catch (e) {
+    try { socket.destroy(); } catch (ignored) { /* nothing left to do */ }
+  }
+});
+
+server.on('error', (err) => {
+  console.error('[gateway] server error', err);
 });
 
 if (require.main === module) {
+  // Last-resort guards: a single bad request must never take the gateway down.
+  process.on('uncaughtException', (err) => {
+    console.error('[gateway] uncaught exception', err);
+  });
+  process.on('unhandledRejection', (err) => {
+    console.error('[gateway] unhandled rejection', err);
+  });
+
   server.listen(PORT, HOST, () => {
     console.log('[connect6] gateway listening on ' + HOST + ':' + PORT + ' (base path: ' + (BASE_PATH || '/') + ')');
   });
@@ -364,6 +547,9 @@ module.exports = {
   getCookie,
   reserveSession,
   sessions,
+  clientIp,
+  parseJsonObject,
+  validateTimeMs,
   CONFIG: {
     HOST,
     PORT,
@@ -373,5 +559,12 @@ module.exports = {
     GAME_SESSION_TTL_MS,
     SESSION_CLEANUP_INTERVAL_MS,
     ENGINE_TIMEOUT_MS,
+    MAX_CLIENT_TIME_MS,
+    MAX_REQUEST_BYTES,
+    MAX_ENGINE_LINE_BYTES,
+    REQUEST_RATE_WINDOW_MS,
+    REQUEST_RATE_MAX,
+    SESSION_RATE_WINDOW_MS,
+    SESSION_RATE_MAX,
   },
 };

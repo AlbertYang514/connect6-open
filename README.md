@@ -63,6 +63,32 @@ Defaults:
 | `CONNECT6_SESSION_TTL_MS` | `1800000` | Slot lifetime (30 min) |
 | `CONNECT6_CLEANUP_INTERVAL_MS` | `1800000` | Cleanup interval |
 | `CONNECT6_ENGINE_TIMEOUT_MS` | `30000` | Kill a hung engine request |
+| `CONNECT6_MAX_CLIENT_TIME_MS` | `10000` | Largest client-supplied `timeMs` |
+| `CONNECT6_MAX_REQUEST_BYTES` | `20000` | Largest accepted JSON body |
+| `CONNECT6_MAX_ENGINE_LINE_BYTES` | `1048576` | Largest buffered engine output |
+| `CONNECT6_RATE_WINDOW_MS` | `60000` | API request rate-limit window |
+| `CONNECT6_RATE_LIMIT_PER_WINDOW` | `120` | API requests per client per window |
+| `CONNECT6_SESSION_RATE_WINDOW_MS` | `600000` | New-slot rate-limit window |
+| `CONNECT6_SESSION_LIMIT_PER_WINDOW` | `10` | New slots per client per window |
+
+## Security and abuse limits
+
+The gateway assumes it is only reachable through the reverse proxy on
+`127.0.0.1`. With that deployment, the last `X-Forwarded-For` hop is used as the
+client identity for rate limiting; do not expose the gateway port directly.
+
+- Request bodies must be a JSON object. `null`, arrays, scalar values, invalid
+  JSON and oversized bodies are rejected instead of reaching the engine.
+- `timeMs` must be an integer between `0` and `CONNECT6_MAX_CLIENT_TIME_MS`.
+- Client-supplied limits never replace the per-difficulty engine budget.
+- New anonymous slots are rate limited per client, so one client cannot
+  continuously occupy every slot. Existing cookie holders are unaffected.
+- Engine stdout is bounded; a runaway or compromised engine is killed instead of
+  growing gateway memory.
+- Engine crashes, spawn failures, timeouts and dropped client connections are
+  handled without taking the gateway process down.
+- The gateway only ever spawns the configured engine binary; it never runs a
+  shell and never executes user-supplied strings.
 
 Copy `.env.example` if you prefer a file:
 
