@@ -1,0 +1,24 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build engine
+        run: g++ -O2 -o backend/engine engine/engine.cpp
+      - name: Gateway tests
+        run: node --test backend/test/gateway.test.js
+      - name: Engine regression tests
+        run: bash engine/tests.sh ./backend/engine
+      - name: Engine tactical verification
+        run: |
+          python3 engine/verify.py
+          python3 engine/selftest.py

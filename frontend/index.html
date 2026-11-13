@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Connect6</title>
+<script>if (window.parent !== window) document.documentElement.classList.add('embed-mode');</script>
+<style>
+  :root {
+    --paper: #f8f3ea;
+    --white: #fffaf2;
+    --ink: #1e1b18;
+    --prose: #40382f;
+    --muted: #6d6257;
+    --line: #ded1bf;
+    --line-strong: #c9b9a5;
+    --coast: #5f7880;
+    --coast-soft: #e4ebeb;
+    --board-bg: #f1ede6;
+    --board-line: #d8d0c4;
+    --board-edge: #b9ad9d;
+    --font-ui: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --font-serif: "Iowan Old Style", "Songti SC", "Noto Serif SC", Georgia, serif;
+    --shell: 1160px;
+    --shell-pad: 20px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    min-width: 320px;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-ui);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior: none;
+    touch-action: manipulation;
+  }
+  a { color: inherit; }
+  a:focus-visible, button:focus-visible, select:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--coast);
+    outline-offset: 3px;
+  }
+
+  .site-header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.5rem;
+    padding: max(14px, env(safe-area-inset-top)) max(var(--shell-pad), env(safe-area-inset-right), calc((100% - var(--shell)) / 2)) 14px max(var(--shell-pad), env(safe-area-inset-left), calc((100% - var(--shell)) / 2));
+    border-bottom: 1px solid rgba(222, 209, 191, 0.48);
+    background: rgba(250, 246, 238, 0.72);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+  }
+  .embed-mode .site-header { display: none; }
+  .embed-mode, .embed-mode body { min-height: 0; height: auto; }
+  .embed-mode #capacity.stage.active { min-height: 100vh; }
+  .wordmark {
+    font-family: var(--font-serif);
+    font-size: 1.05rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    text-decoration: none;
+  }
+  .header-actions { display: flex; align-items: center; gap: 10px; }
+  .github-link, .language-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 42px;
+    border: 1px solid var(--line);
+    background: rgba(255, 250, 242, 0.54);
+    color: var(--ink);
+    transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+  }
+  .github-link { width: 42px; border-radius: 999px; }
+  .language-link {
+    appearance: none;
+    border-radius: 999px;
+    padding: 0 16px;
+    font-family: inherit;
+    font-size: 0.94rem;
+    font-weight: 650;
+    cursor: pointer;
+  }
+  .github-link:hover, .github-link:focus-visible,
+  .language-link:hover, .language-link:focus-visible {
+    border-color: var(--line-strong);
+    background: var(--white);
+    transform: translateY(-1px);
+  }
+
+  .stage { display: none; }
+  .stage.active { display: flex; }
+  #game.stage.active {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(18rem, 21rem);
+    grid-template-rows: auto auto auto auto;
+    align-items: start;
+    column-gap: clamp(2rem, 5vw, 4.25rem);
+    width: min(var(--shell), calc(100% - 2 * var(--shell-pad)));
+    margin: clamp(1.5rem, 3vh, 2.25rem) auto 4rem;
+  }
+  .game-intro, .game-area { display: contents; }
+  #game h1.title { grid-column: 1 / -1; grid-row: 1; margin: 0; }
+  #game .game-description { grid-column: 1; grid-row: 2; margin-top: 0.9rem; }
+  #game .status-line { grid-column: 1; grid-row: 3; margin: 0.9rem 0 1.1rem; }
+  .board-column { min-width: 0; }
+  #game .board-column { grid-column: 1; grid-row: 4; }
+  .board-wrap {
+    width: min(100%, 560px);
+    margin-inline: 0;
+    background: var(--board-bg);
+    overflow: hidden;
+  }
+  canvas.board {
+    display: block;
+    width: 100%;
+    height: auto;
+    touch-action: none;
+  }
+
+  .game-panel {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 1.5rem;
+    padding: 0;
+  }
+  #game .game-panel { grid-column: 2; grid-row: 2 / span 3; }
+  .game-kicker {
+    color: var(--coast);
+    font-family: var(--font-ui);
+    font-size: 0.76rem;
+    font-weight: 650;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  h1.title {
+    margin: 0.55rem 0 0;
+    font-size: clamp(2rem, 3.1vw, 2.65rem);
+    font-weight: 740;
+    letter-spacing: -0.035em;
+    line-height: 1.08;
+  }
+  .game-description {
+    margin: 0.75rem 0 0;
+    color: var(--prose);
+    font-family: var(--font-serif);
+    font-size: 1rem;
+    line-height: 1.75;
+  }
+  .status-line {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin: 1rem 0 0;
+    font-size: 0.82rem;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    padding: 3px 10px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 620;
+  }
+  .chip.black { border-color: var(--ink); background: var(--ink); color: var(--white); }
+  .chip.white { background: var(--white); color: var(--ink); }
+  .chip.ai { border-color: transparent; background: var(--coast-soft); color: #435b63; }
+  .think-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--coast); }
+  .think-dot.pulse { animation: pulse 0.9s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 0.3; } 50% { opacity: 1; } }
+
+  .game-controls h2 {
+    margin: 0 0 0.8rem;
+    font-size: 0.95rem;
+    font-weight: 680;
+  }
+  .game-controls { margin-top: 2.4rem; padding-top: 1.1rem; border-top: 1px solid var(--line); }
+  .controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.6rem;
+  }
+  .controls button {
+    min-height: 46px;
+    padding: 0.55rem 0.8rem;
+    border: 1px solid var(--line-strong);
+    border-radius: 999px;
+    background: rgba(255, 250, 242, 0.6);
+    color: var(--ink);
+    font-family: var(--font-ui);
+    font-size: 0.88rem;
+    font-weight: 650;
+    cursor: pointer;
+    transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+  }
+  .controls button:hover { border-color: var(--line-strong); background: var(--white); transform: translateY(-1px); }
+  .controls button:active { transform: translateY(0); }
+  .controls button.primary { border-color: var(--ink); background: var(--ink); color: var(--white); }
+  .controls button.primary:hover { border-color: #3a342f; background: #2b2723; }
+  .controls button:disabled { opacity: 0.45; cursor: default; transform: none; }
+  .control-label { display: block; margin: 1.1rem 0 0.6rem; color: var(--muted); font-size: 0.78rem; line-height: 1.3; }
+  .difficulty-buttons {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.45rem;
+  }
+  .difficulty-buttons button {
+    min-width: 0;
+    min-height: 42px;
+    padding: 0.4rem 0.35rem;
+    border: 1px solid var(--line-strong);
+    border-radius: 999px;
+    background: rgba(255, 250, 242, 0.6);
+    color: var(--ink);
+    font-family: var(--font-ui);
+    font-size: 0.76rem;
+    font-weight: 650;
+    cursor: pointer;
+    transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+  }
+  .difficulty-buttons button:hover { background: var(--white); }
+  .difficulty-buttons button.selected { border-color: var(--ink); background: var(--ink); color: var(--white); }
+  .difficulty-buttons button:focus-visible { outline: 2px solid var(--coast); outline-offset: 3px; }
+  .difficulty-buttons button:active { transform: translateY(0); }
+  #capacity.stage.active {
+    display: grid;
+    place-items: center;
+    min-height: calc(100vh - 62px);
+    padding: 2rem var(--shell-pad);
+  }
+  .capacity-message { width: min(100%, var(--shell)); padding: 5rem 0; }
+  .capacity-message h1 { font-size: clamp(1.8rem, 3vw, 2.5rem); }
+  .capacity-message p { margin-top: 1.5rem; color: var(--muted); }
+
+  @media (max-width: 860px) {
+    #game.stage.active {
+      display: block;
+      width: min(680px, calc(100% - 2 * var(--shell-pad)));
+      margin-top: 1.75rem;
+    }
+    .game-intro { display: block; margin-bottom: 1.75rem; }
+    .game-area { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.5rem; }
+    #game h1.title { margin: 0.55rem 0 0; }
+    #game .game-description { margin-top: 0.75rem; }
+    #game .status-line { margin: 1rem 0 0; }
+    #game .board-column { grid-column: auto; grid-row: auto; }
+    #game .game-panel { grid-column: auto; grid-row: auto; }
+    #game .game-controls { margin-top: 0; }
+    .board-wrap { width: min(100%, 440px); margin-inline: auto; }
+    .game-panel { width: min(100%, 440px); gap: 1.2rem; margin-inline: auto; }
+    h1.title { font-size: clamp(1.85rem, 6vw, 2.4rem); }
+  }
+  @media (max-width: 520px) {
+    :root { --shell-pad: 14px; }
+    .site-header { gap: 1rem; }
+    #game.stage.active { margin-top: 1.1rem; }
+    .game-intro { margin-bottom: 1.4rem; }
+    .controls { gap: 0.5rem; }
+    .controls button { min-height: 44px; padding-inline: 0.55rem; }
+    .header-actions { gap: 8px; }
+    .github-link, .language-link { min-height: 38px; }
+    .github-link { width: 38px; }
+    .language-link { padding-inline: 12px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
+</style>
+</head>
+<body>
+
+<header class="site-header" id="siteHeader" aria-label="页面导航">
+  <a class="wordmark" href="/">Connect6</a>
+  <div class="header-actions">
+    <a class="github-link" href="https://github.com/AlbertYang514/connect6-open" target="_blank" rel="noreferrer" aria-label="GitHub">
+      <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+        <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.09 3.29 9.4 7.86 10.93.58.1.79-.25.79-.56v-2.17c-3.2.7-3.87-1.36-3.87-1.36-.52-1.34-1.28-1.7-1.28-1.7-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.25.45-2.28 1.18-3.08-.12-.29-.51-1.46.11-3.04 0 0 .97-.31 3.16 1.18a10.9 10.9 0 0 1 5.76 0c2.19-1.49 3.15-1.18 3.15-1.18.63 1.58.24 2.75.12 3.04.74.8 1.18 1.83 1.18 3.08 0 4.41-2.69 5.38-5.25 5.67.42.36.78 1.06.78 2.14v3.19c0 .31.21.67.8.56A11.52 11.52 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z" />
+      </svg>
+    </a>
+    <button class="language-link" id="languageSwitch" type="button" lang="en" aria-label="Switch to English">EN</button>
+  </div>
+</header>
+
+<main class="stage game-layout" id="game">
+  <section class="game-intro">
+    <h1 class="title" id="gameTitle">六子棋</h1>
+    <p class="game-description" id="gameDescription">黑方先下一子，此后每回合各下两子，你执黑</p>
+    <div class="status-line" id="statusLine" aria-live="polite"></div>
+  </section>
+  <div class="game-area">
+    <section class="board-column" aria-label="Connect6 棋盘">
+      <div class="board-wrap">
+        <canvas class="board" id="board" aria-label="19 乘 19 Connect6 棋盘"></canvas>
+      </div>
+    </section>
+    <aside class="game-panel">
+      <section class="game-controls" aria-label="对局控制">
+        <h2 id="controlsTitle">对局控制</h2>
+        <div class="controls" id="controls"></div>
+        <span class="control-label" id="difficultyLabel">难度</span>
+        <div class="difficulty-buttons" id="difficultyControls" role="group" aria-label="难度"></div>
+      </section>
+    </aside>
+  </div>
+</main>
+
+<main class="stage capacity-page" id="capacity">
+  <div class="capacity-message">
+    <h1>503 Service Unavailable</h1>
+    <p id="capacityMessage">服务器繁忙</p>
+  </div>
+</main>
+
+<script>
+'use strict';
+// ==================== config ====================
+const N = 19, NN = N*N;
+const BLACK = 1, WHITE = 2;
+// Resolve the API prefix so the frontend can be served at /connect6/game/,
+// /game/, or under any other prefix without editing the HTML.
+const API_BASE = (() => {
+  if (typeof window.CONNECT6_API_BASE === 'string' && window.CONNECT6_API_BASE) {
+    return window.CONNECT6_API_BASE.replace(/\/$/, '');
+  }
+  const marker = '/game/';
+  const index = location.pathname.indexOf(marker);
+  const prefix = index >= 0 ? location.pathname.slice(0, index) : '';
+  return prefix + '/api';
+})();
+const STORAGE_KEY = 'connect6:lang';
+const TEXT = {
+  zh: {
+    navigation: '页面导航', switchLabel: '切换到英文', switchText: 'EN',
+    title: '六子棋', description: '黑方先下一子，此后每回合各下两子，你执黑',
+    controls: '对局控制', newGame: '新游戏', undo: '悔棋', difficulty: '难度',
+    levels: { easy: '简单', normal: '普通', hard: '困难', expert: '专家' },
+    turn: (color, remaining) => `${color === 'black' ? '黑方' : '白方'}回合 · 还需 ${remaining} 子`,
+    draw: '和棋 —— 棋盘已满', win: (who, color) => `${who}（${color}）获胜！`,
+    busy: '服务器繁忙', unavailable: '暂时无法连接游戏服务，请稍后刷新重试。',
+  },
+  en: {
+    navigation: 'Sections', switchLabel: 'Switch to Chinese', switchText: '中文',
+    title: 'Connect6', description: 'Black plays one stone first. Each side then plays two stones per turn; you play black.',
+    controls: 'Game controls', newGame: 'New game', undo: 'Undo', difficulty: 'Difficulty',
+    levels: { easy: 'Easy', normal: 'Normal', hard: 'Hard', expert: 'Expert' },
+    turn: (color, remaining) => `${color === 'black' ? 'Black' : 'White'} to move · ${remaining} ${remaining === 1 ? 'stone' : 'stones'} left`,
+    draw: 'Draw — the board is full', win: (who, color) => `${who} (${color}) ${who === 'You' ? 'win' : 'wins'}!`,
+    busy: 'Server is busy', unavailable: 'The game service is temporarily unavailable. Refresh and try again later.',
+  },
+};
+function initialLanguage() {
+  try {
+    const stored = window.localStorage.getItem(STORAGE_KEY);
+    if (stored === 'zh' || stored === 'en') return stored;
+  } catch {}
+  return navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+}
+let lang = initialLanguage();
+const text = () => TEXT[lang];
+let capacityMessageKey = 'busy';
+let gameResult = null;
+const embedded = document.documentElement.classList.contains('embed-mode');
+const parentOrigin = (() => {
+  try { return new URL(document.referrer).origin; }
+  catch { return location.origin; }
+})();
+
+function reportEmbeddedHeight() {
+  if (!embedded || window.parent === window) return;
+  window.parent.postMessage({ type: 'connect6:height', height: document.documentElement.scrollHeight }, parentOrigin);
+}
+
+// ==================== state machine ====================
+// phase: 'setup' | 'wait_player' | 'wait_second' | 'ai_thinking' | 'game_over'
+let phase = 'setup';
+
+const playerColor = BLACK;
+const aiColor = WHITE;
+let currentSide = BLACK;   // whose turn
+let stonesPlacedThisTurn = 0; // stones placed in current move (0 or 1)
+let board = null;          // Int8Array
+let moveHistory = [];      // array of {color, cell} in order
+let difficulty = 'normal';
+let aiThinking = false;
+let lastMove = null;       // {cell, color}
+let lastTurnMoves = [];    // cells of the current turn (for highlighting)
+let firstMoveStones = 0;   // total stones before black's very first move decision
+
+const languageSwitch = document.getElementById('languageSwitch');
+languageSwitch.addEventListener('click', () => {
+  lang = lang === 'zh' ? 'en' : 'zh';
+  try { window.localStorage.setItem(STORAGE_KEY, lang); } catch {}
+  applyLanguage();
+  renderControls();
+  updateStatus();
+});
+
+window.addEventListener('message', (event) => {
+  if (!embedded || event.source !== window.parent || event.origin !== parentOrigin) return;
+  if (event.data?.type !== 'connect6:language' || !['zh','en'].includes(event.data.lang)) return;
+  lang = event.data.lang;
+  applyLanguage();
+  renderControls();
+  updateStatus();
+});
+
+function applyLanguage() {
+  const copy = text();
+  document.documentElement.lang = lang === 'zh' ? 'zh-Hans' : 'en';
+  document.title = `${copy.title} · Connect6`;
+  document.getElementById('siteHeader').setAttribute('aria-label', copy.navigation);
+  languageSwitch.textContent = copy.switchText;
+  languageSwitch.lang = lang === 'zh' ? 'en' : 'zh-Hans';
+  languageSwitch.setAttribute('aria-label', copy.switchLabel);
+  document.getElementById('gameTitle').textContent = copy.title;
+  document.getElementById('gameDescription').textContent = copy.description;
+  document.querySelector('.board-column').setAttribute('aria-label', lang === 'zh' ? 'Connect6 棋盘' : 'Connect6 board');
+  canvas.setAttribute('aria-label', lang === 'zh' ? '19 乘 19 Connect6 棋盘' : '19 by 19 Connect6 board');
+  document.getElementById('controlsTitle').textContent = copy.controls;
+  document.querySelector('.game-controls').setAttribute('aria-label', copy.controls);
+  document.getElementById('difficultyLabel').textContent = copy.difficulty;
+  document.getElementById('difficultyControls').setAttribute('aria-label', copy.difficulty);
+  document.getElementById('capacityMessage').textContent = copy[capacityMessageKey];
+  reportEmbeddedHeight();
+}
+
+// ==================== board helpers ====================
+function idx(x,y){ return y*N+x; }
+function cellX(c){ return c%N; }
+function cellY(c){ return Math.floor(c/N); }
+function inBoard(x,y){ return x>=0 && x<N && y>=0 && y<N; }
+
+const DIRS = [[1,0],[0,1],[1,1],[1,-1]];
+function checkWinAt(b, cell, color){
+  const x = cellX(cell), y = cellY(cell);
+  for (const [dx,dy] of DIRS){
+    let run = 1;
+    for (let s=1;s<6;s++){ const nx=x+dx*s, ny=y+dy*s; if(!inBoard(nx,ny)||b[idx(nx,ny)]!==color) break; run++; }
+    for (let s=1;s<6;s++){ const nx=x-dx*s, ny=y-dy*s; if(!inBoard(nx,ny)||b[idx(nx,ny)]!==color) break; run++; }
+    if (run >= 6) return true;
+  }
+  return false;
+}
+function checkWinAny(b, color){
+  for (let c=0;c<NN;c++){ if(b[c]===color && checkWinAt(b,c,color)) return true; }
+  return false;
+}
+
+// ==================== UI ====================
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+let boardPx = 0, cellPx = 0, padPx = 0, dpr = 1;
+
+function resizeBoard(){
+  const wrap = canvas.parentElement;
+  const w = wrap.clientWidth;
+  // fixed 2:1? no, square board. Use integer-ish cell sizing for crispness.
+  const logical = Math.min(w, 560);
+  dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const size = Math.round(logical * dpr);
+  canvas.width = size;
+  canvas.height = size;
+  canvas.style.width = logical + 'px';
+  canvas.style.height = logical + 'px';
+  // board geometry in CSS px mapped to canvas px
+  const marginFrac = 0.04;
+  boardPx = size;
+  padPx = Math.round(size * marginFrac);
+  cellPx = (size - 2*padPx) / (N-1);
+}
+window.addEventListener('resize', () => { resizeBoard(); drawBoard(); });
+window.addEventListener('orientationchange', () => setTimeout(()=>{ resizeBoard(); drawBoard(); }, 200));
+
+function drawBoard(){
+  if (!document.getElementById('game').classList.contains('active')) return;
+  const s = canvas.width;
+  ctx.clearRect(0,0,s,s);
+  // background
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--board-bg').trim();
+  ctx.fillRect(0,0,s,s);
+  // grid lines
+  ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--board-line').trim();
+  ctx.lineWidth = Math.max(1, dpr*0.5);
+  for (let i=0;i<N;i++){
+    const p = padPx + i*cellPx;
+    ctx.beginPath();
+    ctx.moveTo(padPx, p); ctx.lineTo(s - padPx, p); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(p, padPx); ctx.lineTo(p, s - padPx); ctx.stroke();
+  }
+  ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--board-edge').trim();
+  ctx.lineWidth = Math.max(1.5, dpr);
+  ctx.strokeRect(padPx, padPx, s - 2*padPx, s - 2*padPx);
+  // star points (standard 19x19: 3,3 9,9 15,15 etc; do simple 4 corners + center area)
+  drawStar(3,3); drawStar(3,9); drawStar(3,15); drawStar(9,3); drawStar(9,9);
+  drawStar(9,15); drawStar(15,3); drawStar(15,9); drawStar(15,15);
+
+  // highlight last-move cells
+  const highlight = new Set(lastTurnMoves);
+  // stones
+  for (let c=0;c<NN;c++){
+    if (!board || board[c]===0) continue;
+    drawStone(cellX(c), cellY(c), board[c], highlight.has(c), c===lastMove?.cell);
+  }
+}
+
+function drawStar(x,y){
+  const r = Math.max(1.5, dpr*2);
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--board-line').trim();
+  ctx.beginPath();
+  ctx.arc(padPx + x*cellPx, padPx + y*cellPx, r, 0, Math.PI*2);
+  ctx.fill();
+}
+
+function drawStone(x,y,color, isThisTurn, isLast){
+  const cx = padPx + x*cellPx, cy = padPx + y*cellPx;
+  const r = cellPx * 0.46;
+  // subtle shadow
+  ctx.beginPath();
+  ctx.arc(cx + 1, cy + 1, r, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(0,0,0,0.2)'; ctx.fill();
+  // body gradient
+  const g = ctx.createRadialGradient(cx - r*0.3, cy - r*0.3, r*0.2, cx, cy, r);
+  if (color === BLACK){ g.addColorStop(0,'#4a4a4a'); g.addColorStop(1,'#0a0a0a'); }
+  else { g.addColorStop(0,'#ffffff'); g.addColorStop(1,'#c8c8cc'); }
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI*2);
+  ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = color===BLACK ? '#000' : '#999'; ctx.lineWidth = 1;
+  ctx.stroke();
+  // last move marker
+  if (isLast){
+    ctx.beginPath(); ctx.arc(cx,cy, r*0.28, 0, Math.PI*2);
+    ctx.fillStyle = color===BLACK ? '#e11d48' : '#e11d48'; ctx.fill();
+  }
+  // this-turn marker (first stone vs second subtle difference)
+  if (isThisTurn && lastTurnMoves.length===2){
+    // second stone gets a small ring
+    if (lastTurnMoves[1] === idx(x,y)){
+      ctx.beginPath(); ctx.arc(cx,cy, r*0.62, 0, Math.PI*2);
+      ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = Math.max(1.5,dpr*1.2); ctx.stroke();
+    }
+  }
+}
+
+// ==================== status / controls rendering ====================
+const statusLine = document.getElementById('statusLine');
+const controls = document.getElementById('controls');
+
+function renderControls(){
+  controls.innerHTML = '';
+  const newBtn = mkBtn(text().newGame, 'new', 'primary');
+  const undoBtn = mkBtn(text().undo, 'undo');
+  undoBtn.disabled = phase==='game_over' ? false : (moveHistory.length===0 || aiThinking);
+  controls.appendChild(newBtn);
+  controls.appendChild(undoBtn);
+  renderDifficultyControls();
+}
+function renderDifficultyControls(){
+  const difficultyControls = document.getElementById('difficultyControls');
+  difficultyControls.innerHTML = '';
+  for (const level of ['easy','normal','hard','expert']){
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = text().levels[level];
+    button.setAttribute('aria-pressed', String(difficulty === level));
+    if (difficulty === level) button.classList.add('selected');
+    button.addEventListener('click', ()=>{
+      difficulty = level;
+      renderDifficultyControls();
+    });
+    difficultyControls.appendChild(button);
+  }
+}
+function mkBtn(label, action, cls){
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.textContent = label;
+  if (cls) b.className = cls;
+  b.addEventListener('click', ()=>{ handleControl(action); });
+  return b;
+}
+
+function handleControl(action){
+  if (action==='new'){ startGame(); }
+  else if (action==='undo'){ undoMove(); }
+}
+
+// ==================== game flow ====================
+function newBoard(){ board = new Int8Array(NN); }
+
+function startGame(){
+  newBoard();
+  moveHistory = [];
+  lastMove = null; lastTurnMoves = [];
+  gameResult = null;
+  currentSide = BLACK;
+  stonesPlacedThisTurn = 0;
+  setPhase(currentSide===playerColor ? 'wait_player' : 'ai_thinking');
+  renderControls();
+  drawBoard();
+  updateStatus();
+
+  if (phase==='ai_thinking') aiTurn();
+}
+
+function setPhase(p){ phase = p; }
+function updateStatus(){
+  statusLine.innerHTML = '';
+
+  if (phase==='game_over'){
+    const winnerClass = gameResult===BLACK ? 'black' : 'white';
+    statusLine.appendChild(chip(resultText(), winnerClass));
+    return;
+  }
+
+  const remaining = (currentSide===BLACK && moveHistory.length===0 && stonesPlacedThisTurn===0) ? 1 : 2 - stonesPlacedThisTurn;
+  statusLine.appendChild(chip(text().turn(currentSide===BLACK?'black':'white', remaining), currentSide===BLACK?'black':'white'));
+
+  if (aiThinking){
+    const d = document.createElement('span'); d.className='think-dot pulse'; statusLine.appendChild(d);
+  }
+}
+function chip(text, cls){ const s=document.createElement('span'); s.className='chip '+cls; s.textContent=text; return s; }
+
+// ==================== placing stones ====================
+function tryPlace(cell){
+  if (phase!=='wait_player' && phase!=='wait_second') return false;
+  const required = (currentSide===BLACK && moveHistory.length===0) ? 1 : 2;
+  if (board[cell]!==0) return false;
+  placeStone(currentSide, cell);
+  return true;
+}
+
+function placeStone(color, cell){
+  board[cell] = color;
+  moveHistory.push({color, cell});
+  lastMove = {cell, color};
+  lastTurnMoves.push(cell);
+  stonesPlacedThisTurn++;
+
+  // win check: if this stone makes six, game over immediately (no 2nd needed)
+  if (checkWinAt(board, cell, color)){
+    finishGame(color);
+    return;
+  }
+
+  const required = (color===BLACK && moveHistory.length===1) ? 1 : 2;
+  if (stonesPlacedThisTurn >= required){
+    // turn complete, switch side
+    endTurn();
+  } else {
+    // still need another stone this turn
+    setPhase(color===playerColor ? 'wait_second' : 'ai_thinking');
+    if (color===aiColor) { setTimeout(()=>aiTurn(), 150); }
+    drawBoard(); updateStatus();
+  }
+}
+
+function endTurn(){
+  stonesPlacedThisTurn = 0;
+  lastTurnMoves = [];
+  currentSide = 3 - currentSide;
+  // board full -> draw
+  if (isBoardFull()){
+    finishGame(0); return;
+  }
+  setPhase(currentSide===playerColor ? 'wait_player' : 'ai_thinking');
+  drawBoard(); updateStatus();
+  if (phase==='ai_thinking') aiTurn();
+}
+
+function isBoardFull(){ for(let c=0;c<NN;c++) if(board[c]===0) return false; return true; }
+
+function finishGame(winnerColor){
+  phase = 'game_over';
+  gameResult = winnerColor;
+  lastTurnMoves = [];
+  drawBoard(); updateStatus(); renderControls();
+}
+
+function resultText(){
+  if (gameResult===0) return text().draw;
+  const who = gameResult===playerColor ? (lang==='zh'?'你':'You') : 'AI';
+  const color = gameResult===BLACK ? (lang==='zh'?'黑方':'Black') : (lang==='zh'?'白方':'White');
+  return text().win(who, color);
+}
+
+// ==================== AI ====================
+async function aiTurn(){
+  if (phase!=='ai_thinking') return;
+  aiThinking = true;
+  updateStatus();
+
+  // if AI has an immediate winning move (must play it), engine handles it. Just call engine.
+  const boardStr = serializeBoard();
+  const required = (currentSide===BLACK && moveHistory.length===0) ? 1 : 2;
+  const body = {
+    board: boardStr,
+    side: currentSide===BLACK ? 'black' : 'white',
+    stonesThisTurn: stonesPlacedThisTurn,
+    difficulty: difficulty,
+  };
+
+  let result = null;
+  try {
+    const resp = await fetch(API_BASE + '/move', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    if (resp.status===503){ showCapacity('busy'); return; }
+    if (!resp.ok){ throw new Error('API '+resp.status); }
+    result = await resp.json();
+  } catch(e){
+    console.error('AI error', e);
+    aiThinking = false;
+    setPhase(currentSide===playerColor ? 'wait_player' : 'wait_second');
+    updateStatus(); drawBoard();
+    return;
+  }
+
+  aiThinking = false;
+  const moves = result.moves || [];
+  if (moves.length===0){ console.error('AI returned no moves'); finishGame(0); return; }
+
+  // apply AI moves sequentially
+  for (const [mx,my] of moves){
+    const cell = idx(mx,my);
+    if (board[cell]!==0){ console.error('AI tried occupied cell', mx,my); continue; }
+    placeStone(currentSide, cell);
+    if (phase==='game_over') break;
+  }
+
+  updateStatus(); drawBoard();
+}
+
+function serializeBoard(){
+  let s='';
+  for(let c=0;c<NN;c++){ s += board[c]===1?'b':board[c]===2?'w':'.'; }
+  return s;
+}
+
+// ==================== undo ====================
+// Determine, from moveHistory, whose turn it is and how many stones placed this turn.
+function reconstructState(){
+  let side = BLACK, placed = 0;
+  for (let i=0;i<moveHistory.length;i++){
+    const m = moveHistory[i];
+    if (i===0){ side = BLACK; placed = 1; }
+    else if (m.color !== side){ side = m.color; placed = 1; }
+    else placed++;
+  }
+  const required = (side===BLACK && moveHistory.length===1) ? 1 : 2;
+  if (placed >= required){ side = 3 - side; placed = 0; }
+  return { side, placed };
+}
+
+function undoMove(){
+  if (moveHistory.length===0 || aiThinking) return;
+  const st = reconstructState();
+
+  // Case 1: player is mid-turn (placed 1 of 2). Just cancel that single stone.
+  if (st.side===playerColor && st.placed===1 && currentSide===playerColor && stonesPlacedThisTurn===1){
+    const m = moveHistory.pop();
+    board[m.cell] = 0;
+    transitionFromUndo();
+    return;
+  }
+
+  // Case 2: remove one full round = player's last move (1 or 2) + AI's last move (1 or 2).
+  // Remove AI's stones first (top of stack), then player's stones.
+  const removeColor = (color, upTo) => {
+    let n = 0;
+    while (n < upTo && moveHistory.length>0 && moveHistory[moveHistory.length-1].color===color){
+      board[moveHistory.pop().cell] = 0; n++;
+    }
+    return n;
+  };
+  let removed = 0;
+  removed += removeColor(aiColor, 2);      // AI's preceding move
+  removed += removeColor(playerColor, 2);  // player's preceding move
+  if (removed===0 && moveHistory.length>0){
+    // fallback: remove a single stone (shouldn't happen in normal flow)
+    board[moveHistory.pop().cell] = 0;
+  }
+  transitionFromUndo();
+}
+
+function transitionFromUndo(){
+  lastMove = moveHistory.length ? moveHistory[moveHistory.length-1] : null;
+  lastTurnMoves = [];
+  const st = reconstructState();
+  currentSide = st.side; stonesPlacedThisTurn = st.placed;
+  aiThinking = false;
+  phase = (currentSide===playerColor) ? (stonesPlacedThisTurn===0?'wait_player':'wait_second') : 'ai_thinking';
+  renderControls(); drawBoard(); updateStatus();
+  if (phase==='ai_thinking') aiTurn();
+}
+
+// ==================== interaction ====================
+function canvasEvent(e){
+  if (phase!=='wait_player' && phase!=='wait_second') return;
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const cx = (e.clientX - rect.left) * scaleX;
+  const cy = (e.clientY - rect.top) * scaleY;
+  // nearest intersection
+  const x = Math.round((cx - padPx) / cellPx);
+  const y = Math.round((cy - padPx) / cellPx);
+  if (!inBoard(x,y)) return;
+  // tolerance: reject clicks far from intersection
+  const ix = padPx + x*cellPx, iy = padPx + y*cellPx;
+  const dist = Math.hypot(cx-ix, cy-iy);
+  if (dist > cellPx*0.5) return;
+  tryPlace(idx(x,y));
+}
+canvas.addEventListener('pointerdown', (e)=>{ e.preventDefault(); canvasEvent(e); }, {passive:false});
+canvas.addEventListener('click', (e)=>{ canvasEvent(e); });
+
+// ==================== anonymous game slot ====================
+function showGame(){
+  phase='setup';
+  document.getElementById('capacity').classList.remove('active');
+  document.getElementById('game').classList.add('active');
+  resizeBoard();
+  startGame();
+  reportEmbeddedHeight();
+}
+function showCapacity(messageKey){
+  capacityMessageKey = messageKey;
+  document.getElementById('capacityMessage').textContent = text()[messageKey];
+  document.getElementById('game').classList.remove('active');
+  document.getElementById('capacity').classList.add('active');
+  reportEmbeddedHeight();
+}
+async function reserveGameSlot(){
+  const r = await fetch(API_BASE + '/session');
+  if (r.status === 503) return { ok:false, full:true };
+  if (!r.ok) return { ok:false, full:false };
+  const data = await r.json();
+  return { ok:Boolean(data.ok), full:false };
+}
+async function boot(){
+  try {
+    const slot = await reserveGameSlot();
+    if (slot.ok) showGame();
+    else if (slot.full) showCapacity('busy');
+    else showCapacity('unavailable');
+  } catch(e) {
+    showCapacity('unavailable');
+  }
+}
+applyLanguage();
+if (embedded) {
+  const observer = new ResizeObserver(reportEmbeddedHeight);
+  observer.observe(document.documentElement);
+  window.addEventListener('resize', reportEmbeddedHeight);
+}
+boot();
+</script>
+</body>
+</html>

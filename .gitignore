@@ -1,0 +1,20 @@
+# built engine binary
+engine/engine
+backend/engine
+
+# node
+node_modules/
+
+# local environment / secrets
+.env
+
+# logs / lock / runtime state
+*.log
+*.pid
+deploy.lock
+
+# os
+.DS_Store
+
+# local scratch (diagnostics, ad-hoc scripts)
+scratch/
